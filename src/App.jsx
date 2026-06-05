@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState } from "react";
 
 const DEFAULT_HABITS = [
   { id: 1, label: "Despertar a las 9:00 am", icon: "🌅" },
@@ -45,13 +45,13 @@ export default function App() {
   const [habits, setHabits] = useState(() => load(HABITS_KEY, DEFAULT_HABITS));
   const [data, setDataState] = useState(() => load(DATA_KEY, {}));
   const [view, setView] = useState("hoy");
-  const [analyzing, setAnalyzing] = useState(false);
-  const [aiMsg, setAiMsg] = useState("");
   const [editMode, setEditMode] = useState(false);
   const [newLabel, setNewLabel] = useState("");
   const [newIcon, setNewIcon] = useState("🎯");
   const [showIconPicker, setShowIconPicker] = useState(false);
-  const fileRef = useRef();
+  const [notesView, setNotesView] = useState("lista"); // lista | nueva
+  const [newNoteTitle, setNewNoteTitle] = useState("");
+  const [newNoteBody, setNewNoteBody] = useState("");
   const todayKey = getTodayKey();
 
   const dayRecord = getDayRecord(data, todayKey);
@@ -86,45 +86,21 @@ export default function App() {
     updateHabits(habits.filter((h) => h.id !== id));
   }
 
-  async function handlePhoto(e) {
-    const file = e.target.files[0];
-    if (!file) return;
-    e.target.value = "";
-    setAnalyzing(true);
-    setAiMsg("Analizando tu foto...");
-    try {
-      const base64 = await new Promise((res, rej) => {
-        const r = new FileReader();
-        r.onload = () => res(r.result.split(",")[1]);
-        r.onerror = rej;
-        r.readAsDataURL(file);
-      });
-      const habitList = habits.map((h) => `${h.id}. ${h.label}`).join("\n");
-      const response = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          messages: [{ role: "user", content: [
-            { type: "image", source: { type: "base64", media_type: file.type || "image/jpeg", data: base64 } },
-            { type: "text", text: `Analizá esta foto de registro de hábitos. Identificá cuáles están marcados con ✓ y cuáles con ○ o sin marcar.\n\nMi lista:\n${habitList}\n\nRespondé SOLO JSON válido sin markdown:\n{"completados":[1,2],"no_completados":[3,4],"gratitud":"texto o vacío","nota":"observación breve"}` },
-          ]}],
-        }),
-      });
-      const json = await response.json();
-      const text = json.content?.find((b) => b.type === "text")?.text || "";
-      const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
-      const newChecked = { ...dayRecord.checked };
-      (parsed.completados || []).forEach((id) => { newChecked[id] = true; });
-      (parsed.no_completados || []).forEach((id) => { newChecked[id] = false; });
-      const updated = { ...data, [todayKey]: { ...dayRecord, checked: newChecked, gratitud: parsed.gratitud || dayRecord.gratitud, nota: parsed.nota || dayRecord.nota } };
-      setData(updated);
-      setAiMsg(`✅ Detecté ${(parsed.completados || []).length} completados. Ajustá si hace falta.`);
-    } catch {
-      setAiMsg("❌ No pude leer la foto. Marcá manualmente.");
-    }
-    setAnalyzing(false);
+  function addNote() {
+    if (!newNoteTitle.trim() && !newNoteBody.trim()) return;
+    const notes = load("reto-notes", []);
+    const updated = [{ id: Date.now(), title: newNoteTitle.trim(), body: newNoteBody.trim(), date: getTodayKey() }, ...notes];
+    save("reto-notes", updated);
+    setNewNoteTitle("");
+    setNewNoteBody("");
+    setNotesView("lista");
+  }
+
+  function deleteNote(id) {
+    const notes = load("reto-notes", []);
+    save("reto-notes", notes.filter((n) => n.id !== id));
+    // force re-render
+    setDataState({ ...data });
   }
 
   const allKeys = Object.keys(data).sort().reverse();
@@ -148,13 +124,18 @@ export default function App() {
           </div>
         </div>
         <div style={{ display: "flex", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-          {["hoy", "historial", "editar lista"].map((v) => (
-            <button key={v} onClick={() => { setView(v); setEditMode(v === "editar lista"); }} style={{
-              background: view === v ? "rgba(168,155,224,0.25)" : "transparent",
-              border: view === v ? "1px solid #a89be0" : "1px solid rgba(255,255,255,0.1)",
-              color: view === v ? "#f0ece4" : "#a89be0",
+          {[
+            { key: "hoy", label: "Hoy" },
+            { key: "notas", label: "📝 Notas" },
+            { key: "historial", label: "Historial" },
+            { key: "editar lista", label: "✏️ Lista" },
+          ].map(({ key, label }) => (
+            <button key={key} onClick={() => { setView(key); setEditMode(key === "editar lista"); }} style={{
+              background: view === key ? "rgba(168,155,224,0.25)" : "transparent",
+              border: view === key ? "1px solid #a89be0" : "1px solid rgba(255,255,255,0.1)",
+              color: view === key ? "#f0ece4" : "#a89be0",
               padding: "6px 16px", borderRadius: 20, fontSize: 13, cursor: "pointer", letterSpacing: 0.5,
-            }}>{v === "editar lista" ? "✏️ Lista" : v.charAt(0).toUpperCase() + v.slice(1)}</button>
+            }}>{label}</button>
           ))}
         </div>
       </div>
@@ -169,15 +150,6 @@ export default function App() {
               <div style={{ marginTop: 10, fontSize: 13, color: "#a89be0" }}>
                 {new Date().toLocaleDateString("es-AR", { weekday: "long", day: "numeric", month: "long" })}
               </div>
-            </div>
-
-            {/* Foto */}
-            <div style={{ background: "rgba(255,255,255,0.05)", border: "1px dashed rgba(168,155,224,0.4)", borderRadius: 14, padding: "16px 20px", marginBottom: 16, textAlign: "center" }}>
-              <input ref={fileRef} type="file" accept="image/*" style={{ display: "none" }} onChange={handlePhoto} />
-              <button onClick={() => fileRef.current.click()} disabled={analyzing} style={{ background: analyzing ? "rgba(255,255,255,0.05)" : "rgba(168,155,224,0.2)", border: "1px solid rgba(168,155,224,0.5)", color: "#f0ece4", padding: "10px 24px", borderRadius: 10, fontSize: 14, cursor: analyzing ? "not-allowed" : "pointer" }}>
-                {analyzing ? "⏳ Analizando..." : "📸 Subir foto del día"}
-              </button>
-              {aiMsg && <div style={{ marginTop: 10, fontSize: 12, color: aiMsg.startsWith("✅") ? "#90e0ae" : aiMsg.startsWith("❌") ? "#f4a261" : "#a89be0" }}>{aiMsg}</div>}
             </div>
 
             {/* Hábitos */}
@@ -204,6 +176,70 @@ export default function App() {
               ))}
             </div>
           </>
+        )}
+
+        {/* ── NOTAS ── */}
+        {view === "notas" && (
+          <div style={{ paddingTop: 24 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div style={{ fontSize: 11, letterSpacing: 3, color: "#a89be0", textTransform: "uppercase" }}>Notas</div>
+              <button onClick={() => setNotesView(notesView === "nueva" ? "lista" : "nueva")} style={{ background: notesView === "nueva" ? "rgba(244,114,82,0.15)" : "rgba(144,224,174,0.15)", border: notesView === "nueva" ? "1px solid rgba(244,114,82,0.35)" : "1px solid rgba(144,224,174,0.35)", color: notesView === "nueva" ? "#f4a261" : "#90e0ae", borderRadius: 10, padding: "7px 16px", fontSize: 13, cursor: "pointer" }}>
+                {notesView === "nueva" ? "✕ Cancelar" : "+ Nueva nota"}
+              </button>
+            </div>
+
+            {/* Form nueva nota */}
+            {notesView === "nueva" && (
+              <div style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(168,155,224,0.25)", borderRadius: 14, padding: "18px 16px", marginBottom: 20 }}>
+                <div style={{ marginBottom: 12 }}>
+                  <label style={{ fontSize: 11, letterSpacing: 2, color: "#a89be0", textTransform: "uppercase", display: "block", marginBottom: 6 }}>Título</label>
+                  <input
+                    value={newNoteTitle}
+                    onChange={(e) => setNewNoteTitle(e.target.value)}
+                    placeholder="Ej: Reflexión del entrenamiento"
+                    style={{ width: "100%", background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10, padding: "10px 12px", color: "#f0ece4", fontSize: 14, fontFamily: "inherit", boxSizing: "border-box" }}
+                  />
+                </div>
+                <div style={{ marginBottom: 14 }}>
+                  <label style={{ fontSize: 11, letterSpacing: 2, color: "#a89be0", textTransform: "uppercase", display: "block", marginBottom: 6 }}>Contenido</label>
+                  <textarea
+                    value={newNoteBody}
+                    onChange={(e) => setNewNoteBody(e.target.value)}
+                    placeholder="Escribí lo que quieras..."
+                    rows={5}
+                    style={{ width: "100%", background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10, padding: "10px 12px", color: "#f0ece4", fontSize: 14, resize: "vertical", fontFamily: "inherit", boxSizing: "border-box" }}
+                  />
+                </div>
+                <button onClick={addNote} style={{ width: "100%", background: "rgba(144,224,174,0.15)", border: "1px solid rgba(144,224,174,0.35)", color: "#90e0ae", borderRadius: 10, padding: "11px", fontSize: 14, cursor: "pointer" }}>
+                  Guardar nota
+                </button>
+              </div>
+            )}
+
+            {/* Lista de notas */}
+            {notesView === "lista" && (() => {
+              const notes = load("reto-notes", []);
+              if (notes.length === 0) return (
+                <div style={{ textAlign: "center", color: "#a89be0", marginTop: 40, fontSize: 14 }}>No hay notas todavía.</div>
+              );
+              return (
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  {notes.map((n) => (
+                    <div key={n.id} style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 14, padding: "16px" }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                        <div>
+                          {n.title && <div style={{ fontSize: 15, fontWeight: "bold", color: "#f0ece4", marginBottom: 2 }}>{n.title}</div>}
+                          <div style={{ fontSize: 11, color: "#a89be0" }}>{new Date(n.date + "T12:00:00").toLocaleDateString("es-AR", { weekday: "short", day: "numeric", month: "short" })}</div>
+                        </div>
+                        <button onClick={() => deleteNote(n.id)} style={{ background: "rgba(244,114,82,0.12)", border: "1px solid rgba(244,114,82,0.25)", color: "#f4a261", borderRadius: 8, padding: "4px 10px", fontSize: 12, cursor: "pointer", flexShrink: 0 }}>✕</button>
+                      </div>
+                      {n.body && <div style={{ fontSize: 13, color: "#c8c4e0", lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{n.body}</div>}
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
         )}
 
         {/* ── EDITAR LISTA ── */}
